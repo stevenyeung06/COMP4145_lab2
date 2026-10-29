@@ -105,6 +105,117 @@ class StrategyComparisonTests(unittest.TestCase):
         self.assertEqual(comparison["evaluation_end"], self.index[-1])
         self.assertEqual(list(comparison["equity_curves"].columns), ["Golden Cross", "RSI", "Buy and Hold"])
 
+    def test_zero_cost_parameters_reproduce_default_results(self):
+        prices = pd.DataFrame({"Close": np.linspace(100.0, 130.0, len(self.index))}, index=self.index)
+
+        default = compare_strategies(prices)
+        zero_cost = compare_strategies(prices, commission_rate=0, slippage_rate=0)
+
+        pd.testing.assert_frame_equal(default["summary"], zero_cost["summary"])
+        pd.testing.assert_frame_equal(default["equity_curves"], zero_cost["equity_curves"])
+        for strategy in default["results"]:
+            pd.testing.assert_frame_equal(
+                default["results"][strategy]["trades"],
+                zero_cost["results"][strategy]["trades"],
+            )
+
+    def test_flat_buy_and_hold_applies_entry_and_end_of_data_costs(self):
+        prices = pd.DataFrame({"Close": 100.0}, index=self.index)
+        commission_rate = 0.001
+        slippage_rate = 0.0005
+
+        result = simulate_strategy(
+            prices,
+            "Buy and Hold",
+            commission_rate=commission_rate,
+            slippage_rate=slippage_rate,
+        )
+        expected_ending_equity = (
+            10_000
+            * (1 - slippage_rate)
+            * (1 - commission_rate)
+            / ((1 + slippage_rate) * (1 + commission_rate))
+        )
+
+        self.assertAlmostEqual(result["ending_equity"], expected_ending_equity)
+        self.assertEqual(result["trades"].iloc[0]["Exit date"], self.index[-1])
+        self.assertGreater(result["total_commissions"], 0)
+        self.assertGreater(result["total_slippage"], 0)
+
+    def test_no_trades_do_not_incur_costs(self):
+        prices = pd.DataFrame({
+            "Close": 100.0,
+            "GoldenCross": False,
+        }, index=self.index)
+
+        result = simulate_strategy(
+            prices,
+            "Golden Cross",
+            commission_rate=0.02,
+            slippage_rate=0.03,
+        )
+
+        self.assertEqual(result["trade_count"], 0)
+        self.assertEqual(result["total_commissions"], 0)
+        self.assertEqual(result["total_slippage"], 0)
+        self.assertEqual(result["ending_equity"], 10_000)
+
+    def test_higher_costs_reduce_equity_without_changing_trade_dates(self):
+        prices = pd.DataFrame({"Close": 100.0, "GoldenCross": False}, index=self.index)
+        prices.loc[self.index[200], "GoldenCross"] = True
+        prices.loc[self.index[202], "Close"] = 120.0
+        prices.loc[self.index[203], "GoldenCross"] = True
+
+        low_cost = simulate_strategy(prices, "Golden Cross")
+        high_cost = simulate_strategy(
+            prices,
+            "Golden Cross",
+            commission_rate=0.02,
+            slippage_rate=0.03,
+        )
+
+        pd.testing.assert_frame_equal(
+            low_cost["trades"][["Entry date", "Exit date"]],
+            high_cost["trades"][["Entry date", "Exit date"]],
+        )
+        self.assertLess(high_cost["ending_equity"], low_cost["ending_equity"])
+        expected_net_win_rate = (high_cost["trades"]["Return (%)"] > 0).mean() * 100
+        self.assertAlmostEqual(high_cost["win_rate_pct"], expected_net_win_rate)
+
+    def test_end_of_data_liquidation_charges_both_sides(self):
+        prices = pd.DataFrame({"Close": 100.0, "GoldenCross": False}, index=self.index)
+        prices.loc[self.index[-1], "GoldenCross"] = True
+
+        result = simulate_strategy(
+            prices,
+            "Golden Cross",
+            commission_rate=0.01,
+            slippage_rate=0.02,
+        )
+
+        trade = result["trades"].iloc[0]
+        self.assertEqual(trade["Entry date"], self.index[-1])
+        self.assertEqual(trade["Exit date"], self.index[-1])
+        self.assertAlmostEqual(
+            result["total_commissions"],
+            trade["Entry commission"] + trade["Exit commission"],
+        )
+        self.assertAlmostEqual(
+            result["total_slippage"],
+            trade["Entry slippage"] + trade["Exit slippage"],
+        )
+
+    def test_invalid_cost_rates_are_rejected(self):
+        prices = pd.DataFrame({"Close": 100.0}, index=self.index)
+        invalid_rates = [np.nan, np.inf, -0.01, 1.0]
+
+        for rate in invalid_rates:
+            with self.subTest(rate=rate):
+                with self.assertRaisesRegex(ValueError, "commission_rate"):
+                    simulate_strategy(prices, "Buy and Hold", commission_rate=rate)
+                with self.assertRaisesRegex(ValueError, "slippage_rate"):
+                    compare_strategies(prices, slippage_rate=rate)
+
     def test_insufficient_history_is_reported(self):
         short_prices = pd.DataFrame({"Close": 100.0}, index=self.index[:200])
 

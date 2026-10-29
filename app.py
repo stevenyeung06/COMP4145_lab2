@@ -221,25 +221,62 @@ if page == "Strategy comparison":
         )
         st.stop()
 
+    cost_columns = st.columns(2)
+    with cost_columns[0]:
+        commission_pct = st.number_input(
+            "Commission (%)",
+            min_value=0.0,
+            max_value=5.0,
+            value=0.10,
+            step=0.01,
+            format="%.2f",
+            help="Charged on every buy and sell. Use 0% for the zero-cost baseline.",
+        )
+    with cost_columns[1]:
+        slippage_pct = st.number_input(
+            "Slippage (%)",
+            min_value=0.0,
+            max_value=5.0,
+            value=0.05,
+            step=0.01,
+            format="%.2f",
+            help="Execution prices are adjusted from the reference close on every buy and sell.",
+        )
+
+    commission_rate = commission_pct / 100
+    slippage_rate = slippage_pct / 100
     try:
-        strategy_comparison = compare_strategies(comparison_prices)
+        gross_strategy_comparison = compare_strategies(comparison_prices)
+        strategy_comparison = compare_strategies(
+            comparison_prices,
+            commission_rate=commission_rate,
+            slippage_rate=slippage_rate,
+        )
     except (KeyError, ValueError, TypeError) as error:
         st.error(f"Could not compare strategies for {ticker}: {error}")
         st.stop()
 
     evaluation_start = strategy_comparison["evaluation_start"].strftime("%b %d, %Y")
     evaluation_end = strategy_comparison["evaluation_end"].strftime("%b %d, %Y")
-    st.caption(f"Evaluation window: {evaluation_start} to {evaluation_end} · Starting capital: $10,000.00")
+    st.caption(
+        f"Evaluation window: {evaluation_start} to {evaluation_end} · Starting capital: $10,000.00 · "
+        f"Commission: {commission_pct:.2f}% · Slippage: {slippage_pct:.2f}%"
+    )
 
+    net_summary = strategy_comparison["summary"].rename(columns={
+        "Ending equity": "Net ending equity",
+        "Total return (%)": "Net total return (%)",
+        "Win rate (%)": "Net win rate (%)",
+    })
     st.dataframe(
-        strategy_comparison["summary"],
+        net_summary,
         hide_index=True,
-        alt=f"Strategy performance comparison for {ticker}",
+        alt=f"Net strategy performance comparison for {ticker}",
         column_config={
-            "Ending equity": st.column_config.NumberColumn(format="$%.2f"),
-            "Total return (%)": st.column_config.NumberColumn(format="%+.2f%%"),
+            "Net ending equity": st.column_config.NumberColumn(format="$%.2f"),
+            "Net total return (%)": st.column_config.NumberColumn(format="%+.2f%%"),
             "Trade count": st.column_config.NumberColumn(format="%d"),
-            "Win rate (%)": st.column_config.NumberColumn(format="%.1f%%"),
+            "Net win rate (%)": st.column_config.NumberColumn(format="%.1f%%"),
         },
     )
 
@@ -260,11 +297,11 @@ if page == "Strategy comparison":
             x=strategy_comparison["equity_curves"].index,
             y=strategy_comparison["equity_curves"][strategy_name],
             mode="lines",
-            name=strategy_name,
+            name=f"{strategy_name} (net)",
             line={"width": 2},
         ))
     equity_figure.update_layout(
-        title="Daily marked-to-market equity",
+        title="Daily net marked-to-market equity",
         height=440,
         margin={"l": 8, "r": 18, "t": 55, "b": 8},
         paper_bgcolor="rgba(0,0,0,0)",
@@ -277,7 +314,64 @@ if page == "Strategy comparison":
     )
     st.plotly_chart(
         equity_figure,
-        alt=f"Daily equity curves for Golden Cross, RSI, and Buy and Hold on {ticker}",
+        alt=f"Daily net equity curves for Golden Cross, RSI, and Buy and Hold on {ticker}",
+    )
+
+    st.markdown("### Trading cost simulation")
+    selected_strategy = st.selectbox(
+        "Strategy",
+        ["Golden Cross", "RSI", "Buy and Hold"],
+        key="cost_simulation_strategy",
+    )
+    gross_result = gross_strategy_comparison["results"][selected_strategy]
+    net_result = strategy_comparison["results"][selected_strategy]
+    ending_equity_difference = gross_result["ending_equity"] - net_result["ending_equity"]
+    cost_metrics = st.columns(5)
+    with cost_metrics[0]:
+        st.metric("Gross total return", f"{gross_result['total_return_pct']:+.2f}%")
+    with cost_metrics[1]:
+        st.metric("Net total return", f"{net_result['total_return_pct']:+.2f}%")
+    with cost_metrics[2]:
+        st.metric("Commissions", format_money(net_result["total_commissions"]))
+    with cost_metrics[3]:
+        st.metric("Modeled slippage", format_money(net_result["total_slippage"]))
+    with cost_metrics[4]:
+        st.metric("Gross − net ending equity", format_money(ending_equity_difference))
+    st.caption(
+        "The ending-equity difference includes reinvestment effects: costs change the capital available "
+        "for later entries, so it can exceed the direct commissions and modeled slippage."
+    )
+
+    cost_figure = go.Figure()
+    cost_figure.add_trace(go.Scatter(
+        x=gross_result["equity_curve"].index,
+        y=gross_result["equity_curve"],
+        mode="lines",
+        name="Gross (zero cost)",
+        line={"color": "#718078", "width": 2, "dash": "dash"},
+    ))
+    cost_figure.add_trace(go.Scatter(
+        x=net_result["equity_curve"].index,
+        y=net_result["equity_curve"],
+        mode="lines",
+        name="Net (with costs)",
+        line={"color": "#157a56", "width": 2},
+    ))
+    cost_figure.update_layout(
+        title=f"{selected_strategy}: gross versus net equity",
+        height=380,
+        margin={"l": 8, "r": 18, "t": 55, "b": 8},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#ffffff",
+        font={"family": "Manrope, sans-serif", "color": "#17231f"},
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.12, "x": 0},
+        xaxis={"showgrid": False, "title": "Evaluation date"},
+        yaxis={"title": "Equity (USD)", "gridcolor": "#edf1ed", "tickprefix": "$"},
+    )
+    st.plotly_chart(
+        cost_figure,
+        alt=f"Gross and net equity for {selected_strategy} on {ticker}",
     )
 
     st.markdown("### Strategy rules")
@@ -289,9 +383,10 @@ if page == "Strategy comparison":
         "- **Buy and Hold:** buy at the first evaluation close and sell at the final evaluation close."
     )
     st.info(
-        "Execution assumption: signals and exits are filled at the same day's closing price. "
-        "Each strategy starts with $10,000, uses fractional shares, holds at most one long position, "
-        "and pays zero transaction costs."
+        "Signals and exit decisions use reference closing prices; executions adjust those closes by the "
+        "selected slippage rate and charge the selected commission on each entry and exit. Each strategy "
+        "starts with $10,000, uses fractional shares, and holds at most one long position. Set both costs "
+        "to 0% to reproduce the zero-cost baseline."
     )
     st.stop()
 

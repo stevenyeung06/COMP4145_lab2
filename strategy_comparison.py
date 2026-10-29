@@ -62,14 +62,30 @@ def _get_signal_series(prices: pd.DataFrame, strategy: str) -> pd.Series:
     raise ValueError(f"Unknown strategy: {strategy}")
 
 
+def _validate_cost_rate(rate: float, name: str) -> float:
+    try:
+        validated_rate = float(rate)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{name} must be a finite number in the range 0 <= rate < 1.") from None
+
+    if not np.isfinite(validated_rate) or not 0 <= validated_rate < 1:
+        raise ValueError(f"{name} must be a finite number in the range 0 <= rate < 1.")
+    return validated_rate
+
+
 def simulate_strategy(
     prices: pd.DataFrame,
     strategy: str,
     starting_capital: float = STARTING_CAPITAL,
     profit_target: float = PROFIT_TARGET,
     max_holding_days: int = MAX_HOLDING_DAYS,
+    commission_rate: float = 0.0,
+    slippage_rate: float = 0.0,
 ) -> dict:
     """Simulate one strategy over the shared post-warmup evaluation window."""
+    commission_rate = _validate_cost_rate(commission_rate, "commission_rate")
+    slippage_rate = _validate_cost_rate(slippage_rate, "slippage_rate")
+
     if len(prices) <= 200:
         raise ValueError("At least 201 price rows are required for evaluation.")
 
@@ -84,11 +100,17 @@ def simulate_strategy(
     shares = 0.0
     entry_date = None
     entry_price = None
+    entry_execution_price = None
+    entry_cash = 0.0
+    entry_commission = 0.0
+    entry_slippage = 0.0
     scheduled_exit_position = None
     scheduled_exit_reason = None
     trade_rows = []
     equity_values = []
     just_exited = False
+    total_commissions = 0.0
+    total_slippage = 0.0
 
     for position, (date, row) in enumerate(evaluation_prices.iterrows()):
         close_price = float(row["Close"])
@@ -109,26 +131,49 @@ def simulate_strategy(
                 exit_reason = None
 
             if exit_reason is not None:
-                exit_value = shares * close_price
-                cash += exit_value
+                exit_execution_price = close_price * (1 - slippage_rate)
+                exit_commission = shares * exit_execution_price * commission_rate
+                exit_slippage = shares * (close_price - exit_execution_price)
+                sale_proceeds = shares * exit_execution_price - exit_commission
+                cash += sale_proceeds
+                total_commissions += exit_commission
+                total_slippage += exit_slippage
+                net_return = (sale_proceeds / entry_cash - 1) * 100
                 trade_rows.append({
                     "Entry date": entry_date,
                     "Entry price": entry_price,
+                    "Entry execution price": entry_execution_price,
                     "Exit date": date,
                     "Exit price": close_price,
+                    "Exit execution price": exit_execution_price,
                     "Holding days": (date - entry_date).days,
-                    "Return (%)": (close_price / entry_price - 1) * 100,
+                    "Return (%)": net_return,
+                    "Gross return (%)": (close_price / entry_price - 1) * 100,
+                    "Entry commission": entry_commission,
+                    "Exit commission": exit_commission,
+                    "Entry slippage": entry_slippage,
+                    "Exit slippage": exit_slippage,
                     "Exit reason": exit_reason,
                 })
                 shares = 0.0
                 entry_date = None
                 entry_price = None
+                entry_execution_price = None
+                entry_cash = 0.0
+                entry_commission = 0.0
+                entry_slippage = 0.0
                 scheduled_exit_position = None
                 scheduled_exit_reason = None
                 just_exited = True
 
         if shares == 0 and not just_exited and bool(evaluation_signals.loc[date]):
-            shares = cash / close_price
+            entry_cash = cash
+            entry_execution_price = close_price * (1 + slippage_rate)
+            shares = entry_cash / (entry_execution_price * (1 + commission_rate))
+            entry_commission = shares * entry_execution_price * commission_rate
+            entry_slippage = shares * (entry_execution_price - close_price)
+            total_commissions += entry_commission
+            total_slippage += entry_slippage
             cash = 0.0
             entry_date = date
             entry_price = close_price
@@ -150,14 +195,27 @@ def simulate_strategy(
     if shares > 0:
         final_date = evaluation_prices.index[-1]
         final_price = float(evaluation_prices["Close"].iloc[-1])
-        cash += shares * final_price
+        exit_execution_price = final_price * (1 - slippage_rate)
+        exit_commission = shares * exit_execution_price * commission_rate
+        exit_slippage = shares * (final_price - exit_execution_price)
+        sale_proceeds = shares * exit_execution_price - exit_commission
+        cash += sale_proceeds
+        total_commissions += exit_commission
+        total_slippage += exit_slippage
         trade_rows.append({
             "Entry date": entry_date,
             "Entry price": entry_price,
+            "Entry execution price": entry_execution_price,
             "Exit date": final_date,
             "Exit price": final_price,
+            "Exit execution price": exit_execution_price,
             "Holding days": (final_date - entry_date).days,
-            "Return (%)": (final_price / entry_price - 1) * 100,
+            "Return (%)": (sale_proceeds / entry_cash - 1) * 100,
+            "Gross return (%)": (final_price / entry_price - 1) * 100,
+            "Entry commission": entry_commission,
+            "Exit commission": exit_commission,
+            "Entry slippage": entry_slippage,
+            "Exit slippage": exit_slippage,
             "Exit reason": "End of data",
         })
         equity_values[-1] = cash
@@ -166,8 +224,10 @@ def simulate_strategy(
     trades = pd.DataFrame(trade_rows)
     if trades.empty:
         trades = pd.DataFrame(columns=[
-            "Entry date", "Entry price", "Exit date", "Exit price",
-            "Holding days", "Return (%)", "Exit reason",
+            "Entry date", "Entry price", "Entry execution price", "Exit date",
+            "Exit price", "Exit execution price", "Holding days", "Return (%)",
+            "Gross return (%)", "Entry commission", "Exit commission",
+            "Entry slippage", "Exit slippage", "Exit reason",
         ])
 
     ending_equity = float(equity_curve.iloc[-1])
@@ -183,20 +243,37 @@ def simulate_strategy(
         "total_return_pct": total_return,
         "trade_count": trade_count,
         "win_rate_pct": win_rate,
+        "total_commissions": total_commissions,
+        "total_slippage": total_slippage,
         "evaluation_start": evaluation_prices.index[0],
         "evaluation_end": evaluation_prices.index[-1],
     }
 
 
-def compare_strategies(prices: pd.DataFrame) -> dict:
+def compare_strategies(
+    prices: pd.DataFrame,
+    commission_rate: float = 0.0,
+    slippage_rate: float = 0.0,
+) -> dict:
     """Run all supported strategies against the same full-history input."""
+    commission_rate = _validate_cost_rate(commission_rate, "commission_rate")
+    slippage_rate = _validate_cost_rate(slippage_rate, "slippage_rate")
+
     if prices.empty:
         raise ValueError("No price history was returned.")
     if len(prices) <= 200:
         raise ValueError("Insufficient history: more than 200 price rows are required.")
 
     strategies = ["Golden Cross", "RSI", "Buy and Hold"]
-    results = [simulate_strategy(prices, strategy) for strategy in strategies]
+    results = [
+        simulate_strategy(
+            prices,
+            strategy,
+            commission_rate=commission_rate,
+            slippage_rate=slippage_rate,
+        )
+        for strategy in strategies
+    ]
     summary = pd.DataFrame([
         {
             "Strategy": result["strategy"],

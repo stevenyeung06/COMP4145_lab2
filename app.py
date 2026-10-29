@@ -3,6 +3,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from trading_strategy import run_strategy
+from strategy_comparison import compare_strategies
 
 
 st.set_page_config(
@@ -85,7 +86,7 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "Dashboard",
-        ["Price chart", "Trade statistics", "Trade details", "Stock comparison"],
+        ["Price chart", "Trade statistics", "Trade details", "Stock comparison", "Strategy comparison"],
         label_visibility="collapsed",
     )
 
@@ -193,6 +194,105 @@ if page == "Stock comparison":
             )
             st.caption(f"History period: {period}. Returns are average returns per trade, not cumulative portfolio returns.")
 
+    st.stop()
+
+if page == "Strategy comparison":
+    st.markdown('<div class="brand">Market strategy / comparison</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="page-title">Strategy comparison / {ticker}</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="page-subtitle">Compare three strategies over the same post-warmup evaluation window.</div>',
+        unsafe_allow_html=True,
+    )
+
+    try:
+        with st.spinner(f"Loading {ticker} market history..."):
+            comparison_prices, _ = load_strategy(ticker, period)
+    except Exception as error:
+        st.error(f"Could not load market data for {ticker}: {error}")
+        st.stop()
+
+    if comparison_prices is None or comparison_prices.empty:
+        st.warning(f"No price history was returned for {ticker}. Check the ticker and try again.")
+        st.stop()
+    if len(comparison_prices) <= 200:
+        st.warning(
+            f"Insufficient history for {ticker}: received {len(comparison_prices)} price rows; "
+            "at least 201 are required to evaluate strategies after the 200-row warm-up."
+        )
+        st.stop()
+
+    try:
+        strategy_comparison = compare_strategies(comparison_prices)
+    except (KeyError, ValueError, TypeError) as error:
+        st.error(f"Could not compare strategies for {ticker}: {error}")
+        st.stop()
+
+    evaluation_start = strategy_comparison["evaluation_start"].strftime("%b %d, %Y")
+    evaluation_end = strategy_comparison["evaluation_end"].strftime("%b %d, %Y")
+    st.caption(f"Evaluation window: {evaluation_start} to {evaluation_end} · Starting capital: $10,000.00")
+
+    st.dataframe(
+        strategy_comparison["summary"],
+        hide_index=True,
+        alt=f"Strategy performance comparison for {ticker}",
+        column_config={
+            "Ending equity": st.column_config.NumberColumn(format="$%.2f"),
+            "Total return (%)": st.column_config.NumberColumn(format="%+.2f%%"),
+            "Trade count": st.column_config.NumberColumn(format="%d"),
+            "Win rate (%)": st.column_config.NumberColumn(format="%.1f%%"),
+        },
+    )
+
+    no_trade_strategies = [
+        strategy
+        for strategy, result in strategy_comparison["results"].items()
+        if strategy != "Buy and Hold" and result["trade_count"] == 0
+    ]
+    if no_trade_strategies:
+        st.info(
+            f"No entry signals occurred for {', '.join(no_trade_strategies)} during this window; "
+            "their equity remains at the starting capital."
+        )
+
+    equity_figure = go.Figure()
+    for strategy_name in ["Golden Cross", "RSI", "Buy and Hold"]:
+        equity_figure.add_trace(go.Scatter(
+            x=strategy_comparison["equity_curves"].index,
+            y=strategy_comparison["equity_curves"][strategy_name],
+            mode="lines",
+            name=strategy_name,
+            line={"width": 2},
+        ))
+    equity_figure.update_layout(
+        title="Daily marked-to-market equity",
+        height=440,
+        margin={"l": 8, "r": 18, "t": 55, "b": 8},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#ffffff",
+        font={"family": "Manrope, sans-serif", "color": "#17231f"},
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.12, "x": 0},
+        xaxis={"showgrid": False, "title": "Evaluation date"},
+        yaxis={"title": "Equity (USD)", "gridcolor": "#edf1ed", "tickprefix": "$"},
+    )
+    st.plotly_chart(
+        equity_figure,
+        alt=f"Daily equity curves for Golden Cross, RSI, and Buy and Hold on {ticker}",
+    )
+
+    st.markdown("### Strategy rules")
+    st.markdown(
+        "- **Golden Cross:** enter when the 50-day moving average crosses above the 200-day average. "
+        "Exit at a 15% closing-price gain, or the last trading close within 60 calendar days.\n"
+        "- **RSI:** enter when Wilder's 14-period RSI crosses upward through 30. "
+        "Use the same 15% target and 60-calendar-day exit window.\n"
+        "- **Buy and Hold:** buy at the first evaluation close and sell at the final evaluation close."
+    )
+    st.info(
+        "Execution assumption: signals and exits are filled at the same day's closing price. "
+        "Each strategy starts with $10,000, uses fractional shares, holds at most one long position, "
+        "and pays zero transaction costs."
+    )
     st.stop()
 
 st.markdown('<div class="brand">Market strategy / 01</div>', unsafe_allow_html=True)

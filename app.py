@@ -53,6 +53,17 @@ def load_strategy(ticker: str, period: str):
     return run_strategy(ticker=ticker, period=period)
 
 
+def parse_tickers(ticker_text: str) -> list[str]:
+    tickers = []
+    seen = set()
+    for ticker_value in ticker_text.split(","):
+        normalized = ticker_value.strip().upper()
+        if normalized and normalized not in seen:
+            tickers.append(normalized)
+            seen.add(normalized)
+    return tickers
+
+
 def format_money(value: float) -> str:
     return f"${value:,.2f}"
 
@@ -74,9 +85,115 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio(
         "Dashboard",
-        ["Price chart", "Trade statistics", "Trade details"],
+        ["Price chart", "Trade statistics", "Trade details", "Stock comparison"],
         label_visibility="collapsed",
     )
+
+if page == "Stock comparison":
+    st.markdown('<div class="brand">Market strategy / comparison</div>', unsafe_allow_html=True)
+    st.markdown('<div class="page-title">Compare stocks</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="page-subtitle">Compare Golden Cross results using the selected history period and the same trading rules.</div>',
+        unsafe_allow_html=True,
+    )
+
+    with st.form("stock_comparison_form"):
+        ticker_text = st.text_input(
+            "Tickers (comma-separated)",
+            value="MSFT, AAPL, AMZN",
+            help="Enter between one and five unique ticker symbols.",
+        )
+        compare_submitted = st.form_submit_button("Compare", type="primary")
+
+    if compare_submitted:
+        comparison_tickers = parse_tickers(ticker_text)
+        if not comparison_tickers:
+            st.warning("Enter at least one ticker symbol to compare.")
+        elif len(comparison_tickers) > 5:
+            st.error("You can compare at most five unique tickers. Remove some symbols and try again.")
+        else:
+            comparison_rows = []
+            for comparison_ticker in comparison_tickers:
+                try:
+                    comparison_prices, comparison_trades = load_strategy(comparison_ticker, period)
+                except Exception as error:
+                    comparison_rows.append({
+                        "Ticker": comparison_ticker,
+                        "Total trades": None,
+                        "Win rate (%)": None,
+                        "Average return per trade (%)": None,
+                        "Average holding days": None,
+                        "Status": f"Download failed: {error}",
+                    })
+                    continue
+
+                if comparison_prices is None or comparison_prices.empty:
+                    comparison_rows.append({
+                        "Ticker": comparison_ticker,
+                        "Total trades": None,
+                        "Win rate (%)": None,
+                        "Average return per trade (%)": None,
+                        "Average holding days": None,
+                        "Status": "No price data returned; check the ticker.",
+                    })
+                    continue
+
+                if len(comparison_prices) <= 200:
+                    comparison_rows.append({
+                        "Ticker": comparison_ticker,
+                        "Total trades": 0,
+                        "Win rate (%)": None,
+                        "Average return per trade (%)": None,
+                        "Average holding days": None,
+                        "Status": f"Insufficient history ({len(comparison_prices)} trading days; more than 200 required).",
+                    })
+                    continue
+
+                if comparison_trades.empty:
+                    comparison_rows.append({
+                        "Ticker": comparison_ticker,
+                        "Total trades": 0,
+                        "Win rate (%)": None,
+                        "Average return per trade (%)": None,
+                        "Average holding days": None,
+                        "Status": "No trades found for this period.",
+                    })
+                    continue
+
+                trade_count = len(comparison_trades)
+                wins = int((comparison_trades["ProfitPct"] > 0).sum())
+                comparison_rows.append({
+                    "Ticker": comparison_ticker,
+                    "Total trades": trade_count,
+                    "Win rate (%)": wins / trade_count * 100,
+                    "Average return per trade (%)": float(comparison_trades["ProfitPct"].mean()),
+                    "Average holding days": float(comparison_trades["HoldingDays"].mean()),
+                    "Status": "OK",
+                })
+
+            comparison_table = pd.DataFrame(comparison_rows)
+            ticker_issues = [
+                f"{row['Ticker']}: {row['Status']}"
+                for row in comparison_rows
+                if row["Status"].startswith(("Download failed:", "No price data returned"))
+            ]
+            if ticker_issues:
+                st.warning("\n\n".join(ticker_issues), title="Some tickers could not be compared")
+
+            st.dataframe(
+                comparison_table,
+                hide_index=True,
+                alt="Per-ticker Golden Cross trading performance comparison",
+                column_config={
+                    "Total trades": st.column_config.NumberColumn(format="%d"),
+                    "Win rate (%)": st.column_config.NumberColumn(format="%.1f%%"),
+                    "Average return per trade (%)": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "Average holding days": st.column_config.NumberColumn(format="%.1f"),
+                },
+            )
+            st.caption(f"History period: {period}. Returns are average returns per trade, not cumulative portfolio returns.")
+
+    st.stop()
 
 st.markdown('<div class="brand">Market strategy / 01</div>', unsafe_allow_html=True)
 st.markdown(f'<div class="page-title">{ticker} strategy overview</div>', unsafe_allow_html=True)

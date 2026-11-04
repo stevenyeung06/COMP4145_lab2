@@ -1,3 +1,5 @@
+from string import Template
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -12,39 +14,65 @@ st.set_page_config(
     layout="wide",
 )
 
+dark_mode = st.context.theme.type == "dark"
+theme_colors = {
+    "ink": "#e8eee9" if dark_mode else "#17231f",
+    "muted": "#b2beb5" if dark_mode else "#718078",
+    "line": "#3c4941" if dark_mode else "#e2e8e2",
+    "paper": "#111814" if dark_mode else "#f6f8f4",
+    "surface": "#1b251f" if dark_mode else "#ffffff",
+    "sidebar": "#17211b" if dark_mode else "#edf2eb",
+    "green": "#72d6a8" if dark_mode else "#157a56",
+    "red": "#ff9187" if dark_mode else "#c34c43",
+    "lime": "#d3ef68",
+    "input": "#202b24" if dark_mode else "#ffffff",
+    "input_border": "#536258" if dark_mode else "#c6d1c7",
+    "grid": "#354239" if dark_mode else "#edf1ed",
+}
+
 st.markdown(
-    """
+    Template(
+        """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
 
     :root {
-        --ink: #17231f;
-        --muted: #718078;
-        --line: #e2e8e2;
-        --paper: #f6f8f4;
-        --white: #ffffff;
-        --green: #157a56;
-        --red: #c34c43;
-        --lime: #d3ef68;
+        --ink: $ink;
+        --muted: $muted;
+        --line: $line;
+        --paper: $paper;
+        --white: $surface;
+        --green: $green;
+        --red: $red;
+        --lime: $lime;
+        --input-bg: $input;
+        --input-border: $input_border;
     }
-    html, body, [class*="css"] { font-family: 'Manrope', sans-serif; color: var(--ink); }
+    html, body { font-family: 'Manrope', sans-serif; color: var(--ink); }
     .stApp { background: var(--paper); }
     [data-testid="stHeader"] { background: transparent; }
-    [data-testid="stSidebar"] { background: #edf2eb; border-right: 1px solid var(--line); }
+    [data-testid="stSidebar"] { background: $sidebar; border-right: 1px solid var(--line); }
     [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { color: var(--muted); }
     .brand { font-size: 12px; font-weight: 800; letter-spacing: 1.8px; text-transform: uppercase; color: var(--green); }
+    h1, h2, h3, .page-title { color: var(--ink) !important; }
     .page-title { font-size: 34px; line-height: 1.15; font-weight: 800; margin: 8px 0 4px; }
     .page-subtitle { color: var(--muted); font-size: 14px; margin-bottom: 26px; }
     .metric { background: var(--white); border: 1px solid var(--line); border-radius: 6px; padding: 17px 18px; min-height: 96px; }
     .metric-label { color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
     .metric-value { color: var(--ink); font-size: 26px; font-weight: 800; margin-top: 7px; }
     .section-label { font-family: 'DM Mono', monospace; color: var(--green); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin: 20px 0 8px; }
-    .stRadio > div { gap: 8px; }
-    .stRadio label { font-weight: 700; }
+    label, label p { color: var(--ink) !important; }
+    input, textarea, select, [role="combobox"] {
+        background-color: var(--input-bg) !important;
+        color: var(--ink) !important;
+        border-color: var(--input-border) !important;
+    }
+    input::placeholder, textarea::placeholder { color: var(--muted) !important; opacity: 1; }
+    [role="listbox"], [role="option"] { background-color: var(--input-bg); color: var(--ink); }
     [data-testid="stDataFrame"] { border: 1px solid var(--line); border-radius: 6px; }
     footer { visibility: hidden; }
     </style>
-    """,
+    """).substitute(theme_colors),
     unsafe_allow_html=True,
 )
 
@@ -74,6 +102,36 @@ def metric(label: str, value: str) -> None:
         f'<div class="metric"><div class="metric-label">{label}</div>'
         f'<div class="metric-value">{value}</div></div>',
         unsafe_allow_html=True,
+    )
+
+
+def style_figure(figure: go.Figure) -> None:
+    foreground = theme_colors["ink"]
+    grid = theme_colors["grid"]
+    surface = theme_colors["surface"]
+    figure.update_layout(
+        template="plotly_dark" if dark_mode else "plotly_white",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor=surface,
+        font={"family": "Manrope, sans-serif", "color": foreground},
+        legend={"font": {"color": foreground}},
+        hoverlabel={"bgcolor": surface, "font": {"color": foreground}},
+        xaxis={
+            "color": foreground,
+            "gridcolor": grid,
+            "linecolor": grid,
+            "zerolinecolor": grid,
+            "title_font": {"color": foreground},
+            "tickfont": {"color": foreground},
+        },
+        yaxis={
+            "color": foreground,
+            "gridcolor": grid,
+            "linecolor": grid,
+            "zerolinecolor": grid,
+            "title_font": {"color": foreground},
+            "tickfont": {"color": foreground},
+        },
     )
 
 
@@ -312,6 +370,7 @@ if page == "Strategy comparison":
         xaxis={"showgrid": False, "title": "Evaluation date"},
         yaxis={"title": "Equity (USD)", "gridcolor": "#edf1ed", "tickprefix": "$"},
     )
+    style_figure(equity_figure)
     st.plotly_chart(
         equity_figure,
         alt=f"Daily net equity curves for Golden Cross, RSI, and Buy and Hold on {ticker}",
@@ -369,6 +428,7 @@ if page == "Strategy comparison":
         xaxis={"showgrid": False, "title": "Evaluation date"},
         yaxis={"title": "Equity (USD)", "gridcolor": "#edf1ed", "tickprefix": "$"},
     )
+    style_figure(cost_figure)
     st.plotly_chart(
         cost_figure,
         alt=f"Gross and net equity for {selected_strategy} on {ticker}",
@@ -450,6 +510,7 @@ if page == "Price chart":
         xaxis={"showgrid": False, "rangeslider": {"visible": True}},
         yaxis={"title": "Price (USD)", "gridcolor": "#edf1ed", "tickprefix": "$"},
     )
+    style_figure(figure)
     st.plotly_chart(figure, use_container_width=True)
     first_date = prices.index[0].strftime("%b %d, %Y")
     last_date = prices.index[-1].strftime("%b %d, %Y")
@@ -485,6 +546,7 @@ elif page == "Trade statistics":
                 yaxis={"title": "Return (%)", "gridcolor": "#edf1ed"},
                 xaxis={"showgrid": False}, showlegend=False,
             )
+            style_figure(returns_figure)
             st.plotly_chart(returns_figure, use_container_width=True)
         else:
             st.info("No trades were generated for this period.")
@@ -499,6 +561,7 @@ elif page == "Trade statistics":
             title="Trade outcomes", height=340, margin={"l": 10, "r": 10, "t": 55, "b": 8},
             paper_bgcolor="rgba(0,0,0,0)", legend={"orientation": "h", "y": -0.05},
         )
+        style_figure(outcome_figure)
         st.plotly_chart(outcome_figure, use_container_width=True)
     st.caption(f"Positive trade-return sum: {net_return:+.2f}% · Target-hit exits: {int((trades['SellReason'] == 'Target reached').sum()) if total_trades else 0} · Time-limit exits: {int((trades['SellReason'] == 'Max holding period').sum()) if total_trades else 0}")
 
